@@ -1,81 +1,90 @@
 #cloud-config
-
-datasource:
-  Ec2:
-    strict_id: false
-  my-data:
-    DomainFQDN: ${DomainFQDN}
-    KC_ADM_PASS: "${KC_ADM_PASS}"
-    DNS_IP: ${DNS_IP}
-    KC_NAME: ${KC_NAME}
-    KC_PORT: ${KC_PORT}
-ssh_pwauth: yes
+# ws: рабочая станция администратора с графической оболочкой (XFCE), VNC и Google Chrome,
+# доверяющая корпоративной PKI с dc01. В оригинальном курсе — openSUSE + KDE; в cloud.ru
+# openSUSE нет, поэтому Ubuntu 22.04. Имя пользователя sles оставлено, чтобы команды методички работали.
+hostname: ${hostname}
+fqdn: ${hostname}.${domain}
+prefer_fqdn_over_hostname: true
+manage_etc_hosts: true
+ssh_pwauth: false
 users:
   - name: sles
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
-    ssh-authorized-keys:
+    ssh_authorized_keys:
       - "${ssh_key}"
-packages:
-  - unzip
 write_files:
-  - content: |
+  - path: /root/guest_prep.sh
+    permissions: "0700"
+    content: |
       #!/bin/bash
-      zypper install -y -t pattern kde kde_plasma
-      systemctl enable sddm
-      systemctl start sddm
+      exec > /var/log/lab-prep.log 2>&1
+      set -x
+      export DEBIAN_FRONTEND=noninteractive
+      # cloud-init/apt-daily могут ещё держать блокировку apt — ждём её
+      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+      apt_wait() { while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; done; }
+      APT="apt-get -o DPkg::Lock::Timeout=900"
+      timedatectl set-timezone Europe/Moscow
 
-      # Setting up password for user sles
-      cat > pass.txt <<EOF
-      sles:\"${KC_ADM_PASS}\"
+      mkdir -p /etc/systemd/resolved.conf.d
+      cat > /etc/systemd/resolved.conf.d/lab.conf <<EOF
+      [Resolve]
+      DNS=${dns_ip}
+      Domains=${domain}
+      EOF
+      systemctl restart systemd-resolved
+
+      apt_wait; $APT update
+      apt_wait; $APT install -y xfce4 xfce4-goodies xfce4-terminal dbus-x11 \
+        tigervnc-standalone-server tigervnc-common libnss3-tools wget curl
+
+      # Google Chrome
+      wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+      apt_wait; $APT install -y /tmp/chrome.deb
+      rm -f /tmp/chrome.deb
+
+      # VNC: XFCE-сессия и доступ не только с localhost (по умолчанию TigerVNC слушает только 127.0.0.1)
+      echo '$localhost = "no";' >> /etc/tigervnc/vncserver-config-defaults
+      install -d -o sles -g sles -m 700 /home/sles/.vnc
+      cat > /home/sles/.vnc/xstartup <<EOF
+      #!/bin/sh
+      unset SESSION_MANAGER
+      unset DBUS_SESSION_BUS_ADDRESS
+      exec startxfce4
+      EOF
+      chown sles:sles /home/sles/.vnc/xstartup
+      chmod 755 /home/sles/.vnc/xstartup
+
+      # Иначе в каждой VNC-сессии colord просит пароль root («create a color managed device»)
+      cat > /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla <<EOF
+      [Allow colord for remote sessions]
+      Identity=unix-user:*
+      Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
+      ResultAny=no
+      ResultInactive=no
+      ResultActive=yes
       EOF
 
-      chpasswd < pass.txt
-      #
+      install -d -o sles -g sles /home/sles/Desktop
+      cp /usr/share/applications/google-chrome.desktop /home/sles/Desktop/
+      chown sles:sles /home/sles/Desktop/google-chrome.desktop
+      chmod +x /home/sles/Desktop/google-chrome.desktop
 
-      # Installing Google Chrome
-      zypper addrepo http://dl.google.com/linux/chrome/rpm/stable/x86_64 Google-Chrome
-      wget https://dl.google.com/linux/linux_signing_key.pub
-      rpm --import linux_signing_key.pub
-      zypper -n refresh
-      zypper install -y -n pwgen google-chrome-stable mozilla-nss-tools
-
-      ip4=$(/sbin/ip -o -4 addr list eth0 | awk '{print $4}' | cut -d/ -f1)
-      fwd=$(echo $ip4 | awk '{split($1,p,"."); $1=p[1]"."p[2]"."p[3]"."} 1')"2"
-
-      chmod 777 /etc/resolv.conf
-      sed -i '$ d' /etc/resolv.conf
-      echo "nameserver ${DNS_IP}" >> /etc/resolv.conf
-      echo "nameserver $fwd" >> /etc/resolv.conf
-      chmod 644 /etc/resolv.conf
-
-      wget "http://crl.${DomainFQDN}/intermediate.crt"
-      wget "http://crl.${DomainFQDN}/ca.crt"
-      wget "http://crl.${DomainFQDN}/ca-chain.cert.pem"
-      
-      chmod 777 ca.crt
-      cp ca.crt /home/sles
-
-      runuser -l sles -c "mkdir -p /home/sles/.pki/nssdb"
-      runuser -l sles -c "certutil -d sql:/home/sles/.pki/nssdb -A -t \"C,,\" -n \"LAB Class1 Root CA\" -i /home/sles/ca.crt"
-
-      cp ca.crt /usr/share/pki/trust/anchors
-      cp intermediate.crt /usr/share/pki/trust/anchors
-      cp ca.crt /etc/pki/trust/anchors
-      cp intermediate.crt /etc/pki/trust/anchors
-      cp ca-chain.cert.pem /etc/pki/trust/anchors
-      cp ca-chain.cert.pem /usr/share/pki/trust/anchors
+      # Доверие корпоративной PKI: ждём, пока dc01 опубликует сертификаты CA
+      for i in $(seq 1 120); do
+        curl -sf -o /tmp/ca.crt http://crl.${domain}/ca.crt && \
+        curl -sf -o /tmp/intermediate.crt http://crl.${domain}/intermediate.crt && break
+        sleep 15
+      done
+      cp /tmp/ca.crt /usr/local/share/ca-certificates/lab-root-ca.crt
+      cp /tmp/intermediate.crt /usr/local/share/ca-certificates/lab-issuing-ca.crt
       update-ca-certificates
+      cp /tmp/ca.crt /home/sles/ca.crt
+      chown sles:sles /home/sles/ca.crt
 
-      runuser -l sles -c "umask 0077"
-      runuser -l sles -c "mkdir -p \"/home/sles/.vnc\""
-      runuser -l sles -c "chmod go-rwx \"/home/sles/.vnc\""
-      runuser -l sles -c "vncpasswd -f <<<\"${KC_ADM_PASS}\" > \"/home/sles/.vnc/passwd\""
-      runuser -l sles -c "mkdir -p \"/home/sles/Desktop\""
-      ln -s /usr/share/applications/google-chrome.desktop /home/sles/Desktop/google-chrome.desktop
-    path: "/root/guest_prep.sh"
-    permissions: "0740"
+      runuser -l sles -c "mkdir -p /home/sles/.pki/nssdb && certutil -d sql:/home/sles/.pki/nssdb -N --empty-password"
+      runuser -l sles -c "certutil -d sql:/home/sles/.pki/nssdb -A -t 'C,,' -n 'LAB Class1 Root CA' -i /home/sles/ca.crt"
+      echo "LAB PREP DONE"
 runcmd:
-  - sleep 30
-  - sudo -i
-  - /root/guest_prep.sh
+  - [bash, /root/guest_prep.sh]

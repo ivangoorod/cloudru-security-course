@@ -1,5 +1,13 @@
 #cloud-config
-#ssh_pwauth: no
+# opencartshop2: LAMP + OpenCart. В Yandex Cloud ВМ создавалась из образа OpenCart из Marketplace;
+# в cloud.ru такого образа нет, поэтому ставим то же самое на чистую Ubuntu 22.04.
+# Как и в образе Marketplace, установщик OpenCart не пройден — его проходят в браузере,
+# а реквизиты БД лежат в /root/default_passwords.txt (копия в /tmp, как в методичке).
+hostname: ${hostname}
+fqdn: ${hostname}.${domain}
+prefer_fqdn_over_hostname: true
+manage_etc_hosts: true
+ssh_pwauth: false
 users:
   - name: yc-user
     sudo: ALL=(ALL) NOPASSWD:ALL
@@ -7,8 +15,73 @@ users:
     shell: /bin/bash
     ssh_authorized_keys:
       - "${ssh_key}"
+write_files:
+  - path: /root/guest_prep.sh
+    permissions: "0700"
+    content: |
+      #!/bin/bash
+      exec > /var/log/lab-prep.log 2>&1
+      set -x
+      export DEBIAN_FRONTEND=noninteractive
+      # cloud-init/apt-daily могут ещё держать блокировку apt — ждём её
+      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+      apt_wait() { while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; done; }
+      APT="apt-get -o DPkg::Lock::Timeout=900"
+      OC_VER=4.0.2.3
+      timedatectl set-timezone Europe/Moscow
+
+      mkdir -p /etc/systemd/resolved.conf.d
+      cat > /etc/systemd/resolved.conf.d/lab.conf <<EOF
+      [Resolve]
+      DNS=${dns_ip}
+      Domains=${domain}
+      EOF
+      systemctl restart systemd-resolved
+
+      apt_wait; $APT update
+      apt_wait; $APT install -y apache2 mysql-server unzip wget openssl \
+        php libapache2-mod-php php-mysql php-gd php-curl php-zip php-mbstring php-xml php-intl
+
+      # База данных магазина
+      DB_PASS=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)
+      mysql <<EOF
+      CREATE DATABASE opencart CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+      CREATE USER 'opencart'@'localhost' IDENTIFIED BY '$DB_PASS';
+      GRANT ALL PRIVILEGES ON opencart.* TO 'opencart'@'localhost';
+      FLUSH PRIVILEGES;
+      EOF
+
+      cat > /root/default_passwords.txt <<EOF
+      MySQL (OpenCart database)
+      Hostname: localhost
+      Username: opencart
+      Database: opencart
+      Password: $DB_PASS
+      Port: 3306
+      EOF
+      chmod 600 /root/default_passwords.txt
+      install -o yc-user -g yc-user -m 600 /root/default_passwords.txt /tmp/default_passwords.txt
+
+      # OpenCart
+      cd /root
+      wget -q https://github.com/opencart/opencart/releases/download/$OC_VER/opencart-$OC_VER.zip
+      unzip -q opencart-$OC_VER.zip -d opencart
+      UPLOAD=$(find /root/opencart -maxdepth 2 -type d -name upload | head -1)
+      rm -f /var/www/html/index.html
+      cp -a $UPLOAD/. /var/www/html/
+      mv /var/www/html/config-dist.php /var/www/html/config.php
+      mv /var/www/html/admin/config-dist.php /var/www/html/admin/config.php
+      chown -R www-data:www-data /var/www/html
+      rm -rf /root/opencart /root/opencart-$OC_VER.zip
+
+      a2enmod rewrite
+      cat > /etc/apache2/conf-available/opencart.conf <<EOF
+      <Directory /var/www/html/>
+          AllowOverride All
+      </Directory>
+      EOF
+      a2enconf opencart
+      systemctl restart apache2
+      echo "LAB PREP DONE"
 runcmd:
- # - sudo apt-get update
- # - sudo apt-get install perl -y
-  - cp /root/default_passwords.txt /tmp
-  - chmod 7777 /tmp/default_passwords.txt /tmp
+  - [bash, /root/guest_prep.sh]

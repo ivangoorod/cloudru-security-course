@@ -1,7 +1,13 @@
 # terraform
 .terraform.lock.hcl
 terraform.tfstate
+terraform.tfstate.*
+*.tfplan
 .terraform/
+crash.log
 
 # app
 *.pem
+
+# секреты cloud.ru
+cloudru.env

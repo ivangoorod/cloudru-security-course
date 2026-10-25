@@ -1,20 +1,29 @@
 # ==================================
 # Terraform & Provider Configuration
 # ==================================
+# Провайдер cloud.ru Evolution не опубликован в registry.terraform.io.
+# Бинарник лежит локально: ~/.terraform.d/plugins/cloud.ru/cloudru/cloud/<версия>/darwin_arm64/
+# Ключ доступа сервисного аккаунта берётся из переменных окружения AUTH_KEY_ID / AUTH_SECRET
+# (файл ~/.cloudru.env), project_id — из TF_VAR_project_id.
 
 terraform {
   required_providers {
-    yandex = {
-      source  = "yandex-cloud/yandex"
+    cloudru = {
+      source  = "cloud.ru/cloudru/cloud"
+      version = "2.1.5"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "4.0.6"
+    }
+    local = {
+      source  = "hashicorp/local"
+      version = "2.5.2"
     }
   }
-  required_version = ">= 0.13"
+  required_version = ">= 1.5"
 }
 
-provider "yandex" {
-  #service_account_key_file = ""
-  #token     = ""
-  #cloud_id  = ""
-  #folder_id = ""
-  zone      = "ru-central1-a"
+provider "cloudru" {
+  project_id = var.project_id
 }

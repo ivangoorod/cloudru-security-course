@@ -1,138 +1,128 @@
-variable "vpc_name" {
-  description = "VPC Name"
-  type = string
-  default = "keycloak-network"
-}
-
-variable "net_cidr" {
-  description = "Subnet structure primitive"
-  type = list(object({
-    name = string,
-    zone = string,
-    prefix = string
-  }))
-
-  default = [
-    { name = "keycloak-subnet-a", zone = "ru-central1-a", prefix = "10.60.1.0/24" },
-    { name = "keycloak-subnet-b", zone = "ru-central1-b", prefix = "10.61.1.0/24" },
-    { name = "keycloak-subnet-c", zone = "ru-central1-d", prefix = "10.62.1.0/24" },
-  ]
-
-  validation {
-    condition = length(var.net_cidr) >= 1
-    error_message = "At least one Subnet/Zone should be used."
-  }
+variable "project_id" {
+  description = "ID проекта cloud.ru Evolution"
+  type        = string
 }
 
 variable "zone" {
+  description = "Зона доступности"
+  type        = string
+  default     = "ru.AZ-1"
+}
+
+variable "vpc_name" {
   type    = string
-  default = "ru-central1-a"
+  default = "nezabudka-vpc"
 }
 
-variable "nat" {
-  type    = bool
-  default = true
-}
-
-variable "image_family" {
+variable "subnet_cidr" {
   type    = string
-  default = "ubuntu-2004-lts"
+  default = "10.60.1.0/24"
 }
 
-variable "image_id" {
-  type    = string
-  default = "fd8aic46uv4b9nc3pqt7"
+variable "upstream_dns" {
+  description = "Внешний DNS, куда dc01 пересылает запросы вне домена лабы"
+  type        = string
+  default     = "8.8.8.8"
 }
 
-variable "platform_id" {
-  type    = string
-  default = "standard-v3"
-}
-
-variable "keycloak_name" {
-  type    = string
-}
-
-variable "ws_name" {
-  type    = string
-}
-
-variable "cores" {
-  type    = number
-  default = 2
-}
-
-variable "memory" {
-  type    = number
-  default = 4
-}
-
-variable "disk_size" {
-  type    = number
-  default = 50
+variable "image_name" {
+  description = "Публичный образ для всех ВМ"
+  type        = string
+  default     = "ubuntu-22.04"
 }
 
 variable "disk_type" {
   type    = string
-  default = "network-nvme"
+  default = "SSD"
 }
 
-variable "timeout_create" {
-  default = "10m"
-}
-
-variable "timeout_delete" {
-  default = "10m"
+# lowcost10-2-4 — 2 vCPU с долей 10% и 4 ГБ RAM (самый дешёвый вариант 2/4).
+# Если конфигурация окажется недоступна, варианты: low-2-4 (1:3) или gen-2-4 (100%).
+variable "flavors" {
+  type = map(string)
+  default = {
+    dc01          = "lowcost10-2-4"
+    opencartshop2 = "lowcost10-2-4"
+    ws            = "lowcost10-2-4"
+  }
 }
 
 #-----------------------------------------
-variable "opencart_image_id" {
-  type    = string
-  default = "fd80od21rjl4r3enr4sk"
+variable "keycloak_name" {
+  type = string
+}
+
+variable "ws_name" {
+  type = string
 }
 
 variable "domain_fqdn" {
-  type    = string
+  type = string
 }
 
 variable "kc_realm" {
   description = "Keycloak Realm name"
-  type = string
+  type        = string
 }
 
 variable "kc_ver" {
   description = "Keycloak version"
-  type = string
+  type        = string
 }
 
 variable "kc_port" {
   description = "Keycloak HTTPS port listener"
-  type = string
+  type        = string
 }
 
 variable "kc_adm_user" {
   description = "Keycloak admin user name"
-  type = string
+  type        = string
 }
 
 variable "kc_adm_pass" {
   description = "Keycloak admin user password"
-  type = string
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition = (
+      length(var.kc_adm_pass) >= 8 &&
+      can(regex("[a-z]", var.kc_adm_pass)) &&
+      can(regex("[A-Z]", var.kc_adm_pass)) &&
+      can(regex("[0-9]", var.kc_adm_pass)) &&
+      can(regex("[@#%&*/:;,.?+=_-]", var.kc_adm_pass)) &&
+      !can(regex("[\"'`$\\\\ ]", var.kc_adm_pass))
+    )
+    error_message = "Не короче 8 символов: строчные и заглавные буквы, цифра и спецсимвол из @#%&*/:;,.?+=-_ (кавычки, $, обратный слеш и пробел не допускаются)."
+  }
 }
 
 variable "pg_db_name" {
-  description = "PostgeSQL cluster and database name"
-  type = string
-  default = "keycloak"
+  description = "PostgreSQL database name"
+  type        = string
+  default     = "keycloak"
 }
 
 variable "pg_db_user" {
-  description = "PostgeSQL database user name"
-  type = string
+  description = "PostgreSQL database user name"
+  type        = string
 }
 
 variable "pg_db_pass" {
-  description = "PostgeSQL database user's password"
-  type = string
-}
+  description = "PostgreSQL database user's password"
+  type        = string
+  sensitive   = true
 
+  validation {
+    condition = (
+      length(var.pg_db_pass) >= 8 &&
+      can(regex("[a-z]", var.pg_db_pass)) &&
+      can(regex("[A-Z]", var.pg_db_pass)) &&
+      can(regex("[0-9]", var.pg_db_pass)) &&
+      can(regex("[@#%&*/:;,.?+=_-]", var.pg_db_pass)) &&
+      !can(regex("[\"'`$\\\\ ]", var.pg_db_pass))
+    )
+    error_message = "Не короче 8 символов: строчные и заглавные буквы, цифра и спецсимвол из @#%&*/:;,.?+=-_ (кавычки, $, обратный слеш и пробел не допускаются)."
+  }
+}

@@ -1,160 +1,110 @@
-# YandexCloud-Practicum-Security-Course
+# Security Course: стенд «Незабудка» на Cloud.ru Evolution
 
-Сценарий для развертывания контроллера домена IdP KeyCloak и рабочей станции.
+Адаптация сценария [YandexCloud-Security-Course-KeyCloakVersion](https://github.com/Sayanaro/YandexCloud-Security-Course-KeyCloakVersion) для облака **Cloud.ru Evolution**. Сценарий разворачивает тестовую инфраструктуру интернет-магазина «Незабудка» для курса лабораторных работ по защите информации в облаке (лабораторная № 1 «Подготовка тестовой инфраструктуры»).
 
-Сценарий написан для курса "Настройка безопасной среды в Yandex.Cloud".
+История репозитория начинается с исходных коммитов автора курса. Все изменения для cloud.ru собраны в отдельный коммит сверху, поэтому их видно в `git diff` / на странице коммита.
 
-# Настройка окружения
-Предполагаем, что приступая к выполнению заданий практикума у вас уже есть доступ в Yandex Cloud, вы знаете идентификатор своего облака (cloud-id) и [идентификатор каталога](https://cloud.yandex.ru/docs/resource-manager/operations/folder/get-id) (folder-id) в вашем облаке где в процессе выполнения заданий практикума будут создаваться облачные ресурсы.
+## Что разворачивается
 
-## Установка YC CLI
-Для развёртывания рабочего окружения установим инструмент `Yandex Cloud CLI (yc)` на свой компьютер [(подробная инструкция)](https://cloud.yandex.ru/docs/cli/operations/install-cli#interactive).
- 
-## Установка git
-Для загрузки рецепта Terraform установите git [по инструкции](https://git-scm.com/book/ru/v2/Введение-Установка-Git).
- 
-## Установка Terraform
-Установите инструмент `Terraform` на свой компьютер (если он уже не установлен) по [(инструкции)](https://cloud.yandex.ru/docs/tutorials/infrastructure-management/terraform-quickstart#install-terraform).
+| ВМ | Внутренний IP | Что внутри |
+|---|---|---|
+| `dc01` | 10.60.1.10 | bind9 (зона `yp-lab.edu`), Root CA + Issuing CA, CRL/AIA на Apache (`crl.yp-lab.edu`), PostgreSQL, Keycloak 18 на `https://dc01.yp-lab.edu:8443` |
+| `opencartshop2` | 10.60.1.20 | Apache + PHP 8.1 + MySQL + OpenCart 4.0.2.3 (установщик проходится в браузере, как в методичке) |
+| `ws` | 10.60.1.30 | XFCE + TigerVNC + Google Chrome, доверяет корпоративной PKI |
 
-  ### Установка Terraform для Windows:
-  Распакуйте архив и скопируйте файл terraform.exe в каталог `C:\Windows\System32`
- 
-Для корректной установки всех необходимых ресурсов Terraform создайте в домашнем каталоге (`/home/<username>` - для MacOS и Linux, `C:\Users\Administrator\AppData\Roaming`- для Windows) файл `.terraformrc` (для Windows `terraform.rc`) с содержимым:
+Также создаются: VPC, подсеть 10.60.1.0/24, три публичных IP, группа безопасности `lab1-allow-all` и SSH-ключ `pt_key.pem`.
+
+Имена пользователей ВМ (`ubuntu`, `sles`, `yc-user`) и команды оставлены как в методических указаниях, поэтому их шаги выполняются без изменений.
+
+## Чем отличается от версии для Yandex Cloud
+
+| Yandex Cloud | Cloud.ru Evolution | Почему |
+|---|---|---|
+| Провайдер `yandex-cloud/yandex`, OAuth-токен | Провайдер `cloudru/cloud` 2.1.5, ключ доступа сервисного аккаунта | Другое облако |
+| Managed Service for PostgreSQL | PostgreSQL на `dc01` | Проще и дешевле для учебного стенда |
+| ВМ магазина из образа OpenCart в Marketplace | Ubuntu 22.04, LAMP и OpenCart ставит cloud-init | В cloud.ru нет такого образа |
+| `ws` на openSUSE + KDE | `ws` на Ubuntu 22.04 + XFCE | В каталоге образов cloud.ru нет openSUSE |
+| Три подсети в трёх зонах | Одна подсеть в `ru.AZ-1` | Исходный сценарий использовал только первую |
+| Без групп безопасности, всё открыто | Группа `lab1-allow-all`, тоже всё открыто | В cloud.ru сетевой интерфейс не создаётся без группы. Порты закрываются во 2-й лабораторной |
+| DNS-форвардер — адрес `x.x.x.2` подсети | systemd-resolved: `yp-lab.edu` → dc01, остальное → 8.8.8.8 | Другая сетевая модель |
+| Конфиги OpenSSL скачиваются с GitHub при установке | Вшиты в cloud-init | Меньше внешних зависимостей |
+| 2 vCPU (100%), 4 ГБ | `lowcost10-2-4`: 2 vCPU (10%), 4 ГБ | Экономия гранта. Меняется в `variables.tf` |
+
+Скрипты установки также дорабатывались:
+
+- **Ожидание apt.** Скрипты ждут, пока cloud-init отпустит блокировку apt, и останавливаются, если пакеты не установились.
+- **Секреты.** Пароль БД Keycloak хранится в `keycloak.conf` с правами 600, а не в systemd-юните. Файл с паролями после установки удаляется.
+- **Сертификат Keycloak.** Выдаётся с SAN `dc01.yp-lab.edu` и `keycloak.yp-lab.edu` и полной цепочкой.
+- **VNC.** TigerVNC слушает не только localhost. Добавлено правило polkit, чтобы в VNC-сессии не всплывал запрос пароля root от colord.
+
+## Подготовка (один раз)
+
+1. **Аккаунт.** Зарегистрируйтесь в [Cloud.ru Evolution](https://cloud.ru/evolution). Физлицо при привязке карты получает грант 4 000 бонусов, этого с запасом хватает на курс.
+2. **Сервисный аккаунт.** Консоль → «Пользователи» → «Сервисные аккаунты» → «Создать аккаунт», уровень «Проект». Дайте **только** роли `eiv.admin` (Evolution Compute) и `vpc.admin` (Evolution VPC): это принцип минимальных привилегий.
+3. **Ключ доступа.** В карточке аккаунта откройте «Ключи доступа» → «Создать». Скопируйте Key ID и Secret: секрет показывается один раз.
+4. **Переменные окружения.** Заполните `cloudru.env.example` и сохраните как `~/.cloudru.env` (права 600). В репозиторий его не коммитьте.
+5. **Terraform.** Нужен Terraform ≥ 1.5.
+6. **Провайдер cloud.ru.** Его нет в registry.terraform.io, поэтому бинарник нужно положить вручную. Скачайте файл под свою ОС из [релизов cloud-ru/evo-terraform](https://github.com/cloud-ru/evo-terraform/releases/tag/v2.1.5):
+
+   | ОС | Файл релиза | Куда положить (имя файла — `terraform-provider-cloud_v2.1.5`) |
+   |---|---|---|
+   | macOS Apple Silicon | `..._darwin_arm64` | `~/.terraform.d/plugins/cloud.ru/cloudru/cloud/2.1.5/darwin_arm64/` |
+   | macOS Intel | `..._darwin_amd64` | `~/.terraform.d/plugins/cloud.ru/cloudru/cloud/2.1.5/darwin_amd64/` |
+   | Linux | `..._linux_amd64` | `~/.terraform.d/plugins/cloud.ru/cloudru/cloud/2.1.5/linux_amd64/` |
+   | Windows | `..._windows_amd64` | `%APPDATA%\terraform.d\plugins\cloud.ru\cloudru\cloud\2.1.5\windows_amd64\` (с расширением `.exe`) |
+
+   На macOS и Linux:
+   ```bash
+   V=2.1.5; OS=darwin_arm64   # подставьте свою платформу
+   D=~/.terraform.d/plugins/cloud.ru/cloudru/cloud/$V/$OS
+   mkdir -p $D && curl -L -o $D/terraform-provider-cloud_v$V \
+     https://github.com/cloud-ru/evo-terraform/releases/download/v$V/terraform-provider-cloud_${V}_$OS
+   chmod +x $D/terraform-provider-cloud_v$V
+   ```
+
+## Запуск
 
 ```bash
-provider_installation {
-    network_mirror {
-      url = "https://terraform-mirror.yandexcloud.net/"
-      include = ["registry.terraform.io/*/*"]
-    }
-    direct {
-      exclude = ["registry.terraform.io/*/*"]
-    }
-  }
-  ```
- 
- 
-## Подключение к Web консоли облака с помощью Яндекс ID
-* Откроем в новой вкладке браузера [консоль облака](https://console.cloud.yandex.ru/) и, слева внизу, выберем `Учетная запись` и выйдем из всех текущих аккаунтов облака. В результате на экране должна показаться страница с кнопкой `Войти в аккаунт на Яндексе`. Закроем эту страницу.
-* Откроем в новой вкладке [ссылку](https://passport.yandex.ru/auth?mode=add-user&retpath=https%3A%2F%2Fconsole.cloud.yandex.ru%2F) где будет предложено авторизоваться в Яндекс ID
-* Введём имя и пароль пользователя для учётной записи Яндекс ID, после чего произойдёт перенаправление в консоль Yandex Cloud
-* Перейдём по [ссылке](https://oauth.yandex.ru/authorize?response_type=token&client_id=1a6990aa636648e9b2ef855fa7bec2fb) для получения OAuth Token. Значение token будет выглядеть примерно так `AQAAAAAABQ0pAATrwPdubkJPerC4mJyaRELWbUY`
-* Сохраним полученное значение Token в переменной окружения (для Windows – PowerShell, MacOS и Linux – bash)
-
-#### Windows:
-```PowerShell
-$env:YC_TOKEN="<ваш OAuth Token>"
-```
-
-#### MacOS и Linux:
-```bash
-export YC_TOKEN=<ваш OAuth Token>
-```
-
-
-Создадим профиль в yc для работы с облаком
-
-#### Настройка профиля yc в MacOS и Linux:
-```bash
-yc config profile create security
-yc config set cloud-id <cloud-id>
-yc config set folder-id <folder-id>
-yc config set token $YC_TOKEN
-```
-
-#### Настройка профиля yc в Windows:
-```PowerShell
-yc config profile create security
-yc config set cloud-id <cloud-id>
-yc config set folder-id <folder-id>
-yc config set token $env:YC_TOKEN
-```
-
-где вместо `<cloud-id>` нужно указать идентификатор своего облака, а вместо `<folder-id>` нужно указать идентификатор каталога в облаке. Идентификаторы можно получить из консоли облака через веб интерфейс.
- 
-### Загрузка сценария Terraform
-```bash
-git clone https://github.com/Sayanaro/YandexCloud-Security-Course-KeyCloackVersion.git
-cd YandexCloud-Security-Course-KeyCloackVersion
-```
- 
-## Развёртывание рабочей среды с помощью Terraform
-Сценарий разворачивает контроллер домена Active Directory + ADFS, рабочую станцию ws и инстанс интернет-магазина OpenCart.
-
-Имена виртуальных машин, домена, и пользователей задаются переменными в файле `terraform.tfvars`. Остальные переменные заданы в файле `variables.tf` в параметрах по умолчанию.
-
-Для начала зададим переменные окружения:
- 
-#### Windows:
- 
-* Запустите консоль PowerShell
-* Выполните:
-```PowerShell
-yc config profile activate security
-$env:YC_TOKEN = "ваш OAuth токен"
-$env:YC_CLOUD_ID=$(yc config get cloud-id)
-$env:YC_FOLDER_ID=$(yc config get folder-id)
-```
- 
-#### MacOS/Linux:
- 
-* Запустите консоль bash
-* Выполните:
-```bash
-yc config profile activate security
-export YC_TOKEN="ваш OAuth токен"
-export YC_CLOUD_ID=$(yc config get cloud-id)
-export YC_FOLDER_ID=$(yc config get folder-id)
-```
- 
-Инициализируйте Terraform:
-```bash
+source ~/.cloudru.env
 terraform init
-terraform apply
+terraform plan      # 21 ресурс к созданию
+terraform apply     # спросит пароли Keycloak и PostgreSQL
+terraform output instructions
 ```
 
-Сценарий попросит ввести пароль администратора. Пароль должен быть не менее 8 символов, содержать строчные и заглавные буквы, минимум одну цифру 0-9 и минимум один спецсимвол (@#$%&*/:;"'\,.?+=-_).
+Пароли: не короче 8 символов, со строчными и заглавными буквами, цифрой и спецсимволом из `@#%&*/:;,.?+=-_`. Кавычки, `$`, `\` и пробел не допускаются.
 
-Спустя 25 минут окружение будет настроено и готово к работе.
+После `apply` установка внутри ВМ идёт ещё 10–20 минут. Ход установки пишется в `/var/log/lab-prep.log`, а в конце появляется строка `LAB PREP DONE`.
 
-Дальнейшая работа будет проводиться на ВМ ws для демонстрации создания федерации.
+Дальше всё как в методичке:
 
-### Подключение к ВМ из Windows:
-Перед созданием ВМ терраформ генерирует криптопару для доступа к гостевой ОС по протоколу SSH. Закрытый ключ сохраняется в файле `pt_key.pem`. Чтобы подключиться с использованием этого файла из ОС Windows необходимо изменить права доступа к нему.
-После выполнения сценария Terraform выполните в PowerShell:
+- **OpenCart.** Откройте `http://<IP opencartshop2>/` и пройдите установщик. Реквизиты БД выводит команда из `terraform output instructions`. После установки удалите каталог `install`: `sudo rm -rf /var/www/html/install`.
+- **VNC.** Подключитесь `ssh -i pt_key.pem sles@<IP ws>` и выполните `vncserver -geometry 1200x800 -depth 32 -name remote-desktop :1`. Затем откройте VNC-клиентом `<IP ws>:5901`.
+- **Проверка PKI.** В Chrome на `ws` откройте `https://dc01.yp-lab.edu:8443`. Сертификат должен быть от «LAB Issuing CA» и без предупреждений.
 
-```PowerShell
-$Key = "pt_key.pem"
-Icacls $Key /c /t /Inheritance:d
-Icacls $Key /c /t /Remove:g Administrator "Authenticated Users" BUILTIN\Administrators BUILTIN Everyone System Users
-Icacls $Key /c /t /Grant ${env:UserName}:F
-TakeOwn /F $Key
-Icacls $Key /c /t /Grant:r ${env:UserName}:F
-Icacls $Key
-```
+## Стоимость и экономия гранта
 
-После этого можно подключаться к ВМ Linux по ssh:
+- Работающая ВМ `lowcost10-2-4` вместе с диском обходится примерно в 3 ₽ в час.
+- Выключенный стенд стоит около 40 ₽ в сутки: диски и публичные IP оплачиваются и у остановленных ВМ.
+- Между занятиями можно выключить ВМ в консоли. Тогда всё сохранится, а после включения на `ws` нужно снова запустить `vncserver`.
+- Можно и удалить стенд командой `terraform destroy`. Это дешевле, но после нового `apply` установщик OpenCart придётся пройти заново.
 
-```PowerShell
-ssh <username>@<pulic_ip> -i pt_key.pem
-```
+## Известные проблемы cloud.ru и их обход
 
-## Подключение к ВМ
-```bash
-# keycloak:
-ssh ubuntu@<keycloak_vm_public_ip> -i pt_key.pem
+| Симптом | Причина | Что сделано / что делать |
+|---|---|---|
+| `Provider produced inconsistent result ... dns_servers` | Баг провайдера 2.1.5: API возвращает список DNS в другом порядке | В подсети оставлен один DNS, внутренний задаётся на ВМ |
+| `Interface is not found` при пересоздании ВМ | cloud.ru удаляет сетевые интерфейсы вместе с ВМ | Пересоздавайте ВМ вместе с интерфейсом: `terraform apply -replace='cloudru_evolution_compute_vm.vm["dc01"]' -replace='cloudru_evolution_compute_interface.nic["dc01"]'` |
+| ВМ не отвечает, в серийной консоли `(initramfs)` | Разовый сбой подготовки диска | Пересоздайте диск, ВМ и интерфейс через `-replace` |
+| В консоли Shared/Balanced «временно недоступны» | Ограничения веб-консоли | Через API/Terraform `lowcost10-2-4` и `low-2-4` создаются. Запасной вариант — `gen-2-4` |
+| `terraform init` не видит провайдер cloud.ru | Его нет в публичном реестре | См. шаг 6 подготовки |
+| Ошибки 403 от `*.api.cloud.ru` или `registry.terraform.io` | Корпоративный прокси (`HTTPS_PROXY`) | `export NO_PROXY="$NO_PROXY,.cloud.ru"` или запуск вне корпоративной сети |
 
-# ws:
-ssh sles@<ws_vm_public_ip> -i pt_key.pem
-```
+## Безопасность
 
-Для полдключения к рабочему столу через VNC-клиент: 
-* подключитесь к ВМ ws по ssh:
-```bash
-ssh sles@<ws_vm_public_ip> -i pt_key.pem
-```
-* выполните:
-```bash
-vncserver -geometry 1200x800 -depth 32 -name remote-desktop :1
-```
-* Подключитесь к рабочему столу по порту 5901
+- `terraform.tfstate` содержит пароли Keycloak и PostgreSQL: они передаются на ВМ через cloud-init. Файлы `*.tfstate` и `pt_key.pem` перечислены в `.gitignore`, не коммитьте их.
+- Стенд **намеренно небезопасен**: группа `lab1-allow-all` открывает все порты, а VNC и Keycloak доступны из интернета. Это исходное состояние курса. Закрытие портов, VPN, федерация удостоверений и SIEM — предмет следующих лабораторных.
+
+## Лицензия
+
+Исходный сценарий © Sayanaro и участники, [GPL-2.0](LICENSE). Адаптация для cloud.ru распространяется на тех же условиях.
